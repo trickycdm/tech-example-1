@@ -1,0 +1,81 @@
+name: create-release
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    # ignore this check if the commit message contains a flag to skip https://github.com/marketplace/actions/skip-based-on-commit-message
+    if: "!contains(github.event.head_commit.message, 'ci(skip)')"
+    env:
+      PACKAGE_VERSION: 0.0.0
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token, note adding it here allows all actions that need it to access it.
+      CI: true # stops tests running in watch mode
+
+    strategy:
+      matrix:
+        node-version: [12.16.1]
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          token: ${{secrets.PERSONAL_ACCESS_TOKEN}}
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: App build
+        run: |
+          npm i
+          npm run test
+
+      - name: Bump package version
+        run: echo ::set-env name=PACKAGE_VERSION::$(npm version minor)
+
+      - name: Generate Changelog
+        id: Changelog
+        uses: scottbrenner/generate-changelog-action@master
+        env:
+          REPO: ${{ github.repository }}
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@latest
+        with:
+          tag_name: ${{env.PACKAGE_VERSION}}
+          release_name: ${{env.PACKAGE_VERSION}}
+          body: |
+            ${{ steps.Changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
+
+      # https://github.community/t5/GitHub-Actions/Best-way-to-automate-versioning-publishing-to-GitHub-Package/td-p/31211 ...
+      - name: Push version change
+        run: |
+          git config user.email "trickycdm@users.noreply.github.com"
+          git config user.name "trickycdm"
+          git add package.json
+          git commit -m "ci(skip): version bump ${{env.PACKAGE_VERSION}}"
+          git push
+
+      - name: Create Github Artifact
+        run: echo "todo ." #https://github.com/actions/upload-artifact
+
+      - name: Generate Deployment Artifact
+        run: zip -r -X deploy.${{env.PACKAGE_VERSION}}.zip api/ libs/ .env .env.example *.js *.json
+
+      - name: Deploy to EB
+        uses: einaregilsson/beanstalk-deploy@v10
+        with:
+          aws_access_key: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+          application_name: node-poc
+          environment_name: NodePoc-env-1
+          version_label: ${{env.PACKAGE_VERSION}}
+          region: eu-west-2
+          deployment_package: deploy.${{env.PACKAGE_VERSION}}.zip
